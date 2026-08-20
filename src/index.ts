@@ -1,35 +1,39 @@
-import { getMappingResult } from './mappings';
-import { getSearchResult } from './search';
-import { errorPage } from './utils';
+import { DEFAULT_HEADERS, RESERVED_PATHNAMES } from './constants.ts';
+import { getUrlForRequest } from './router.ts';
 
 export default {
 	fetch(request): Response {
 		const requestUrl = new URL(request.url);
-		const { pathname, search } = requestUrl;
 
-		if (pathname === '/favicon.ico') {
+		if (requestUrl.pathname === RESERVED_PATHNAMES.favicon) {
 			return new Response(null, {
 				status: 404,
 				headers: {
+					...DEFAULT_HEADERS,
 					'cache-control': 'private, max-age=86400',
-					'x-robots-tag': 'noindex',
 				},
 			});
 		}
 
-		const result = getSearchResult(requestUrl) ?? getMappingResult(pathname, search);
+		const url = getUrlForRequest(requestUrl);
 
-		if ('redirect' in result) {
+		if (url) {
 			return new Response(null, {
 				status: 302,
 				headers: {
-					location: result.redirect,
-					'cache-control': result.cache === 'short' ? 'private, max-age=300' : 'private, no-store',
-					'x-robots-tag': 'noindex',
+					...DEFAULT_HEADERS,
+					location: url,
+					'cache-control': 'private, max-age=300',
 				},
 			});
 		}
 
-		return errorPage(result.status, result.message);
+		return new Response(null, {
+			status: 404,
+			headers: {
+				...DEFAULT_HEADERS,
+				'cache-control': 'private, no-store',
+			},
+		});
 	},
 } satisfies ExportedHandler<Env>;

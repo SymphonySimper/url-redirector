@@ -1,17 +1,12 @@
 {
+	"extends": "./tsconfig.json",
 	"compilerOptions": {
-		"target": "es2024",
-		"lib": ["es2024"],
-		"module": "es2022",
-		"moduleResolution": "Bundler",
+		/* compile.ts runs under node, and imports src modules with explicit .ts extensions. */
+		"types": ["node", "./worker-configuration.d.ts"],
 		"allowImportingTsExtensions": true,
+		/* node only strips types, so the script must not use syntax that needs emit. */
 		"erasableSyntaxOnly": true,
-		"isolatedModules": true,
-		"noEmit": true,
-		"strict": true,
-		"skipLibCheck": true,
-		"types": ["node"],
 		"verbatimModuleSyntax": true
 	},
-	"include": ["scripts/**/*.ts", "src/mappings/config.ts", "src/search/config.ts"]
+	"include": ["scripts/**/*.ts"]
 }

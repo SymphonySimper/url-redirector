@@ -9,7 +9,7 @@
 	"compatibility_date": "2026-08-18",
 	"build": {
 		"command": "pnpm config:compile",
-		"watch_dir": ["scripts/compile.ts", "src/mappings/config.ts", "src/search/config.ts"],
+		"watch_dir": ["scripts/compile.ts", "src/config/mappings.ts", "src/config/search.ts"],
 	},
 	"observability": {
 		"enabled": true,
@@ -17,6 +17,9 @@
 	},
 	"upload_source_maps": true,
 	"minify": true,
+	// Drops esbuild's __name shim; uploaded source maps still resolve names in stack traces.
+	// https://esbuild.github.io/api/#keep-names
+	"keep_names": false,
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

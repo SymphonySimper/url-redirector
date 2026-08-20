@@ -15,3 +15,6 @@ cf-typegen:
 
 format:
     pnpm run format
+
+compile: && format
+    pnpm run config:compile

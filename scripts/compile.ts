@@ -1,130 +1,109 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
-import MAPPING_CONFIG from '../src/mappings/config.ts';
-import { CONFIG as SEARCH_CONFIG, SEARCH_TERMS_PLACEHOLDER, type SearchEngine } from '../src/search/config.ts';
+import type { Mappings, MappingURLs, SearchEngine } from '../src/types.ts';
+import MAPPING_CONFIG from '../src/config/mappings.ts';
+import { type RawSearchEngine, SEARCH_ENGINE_DEFAULT, SEARCH_ENGINES, SEARCH_TERMS_PLACEHOLDER } from '../src/config/search.ts';
+import { RESERVED_PATHNAMES, SEARCH_ENGINE_KEY_PATTERN } from '../src/constants.ts';
 
-const GENERATED_DIRECTORY = new URL('../src/generated/', import.meta.url);
-const RESERVED_PATHNAMES = new Set(['/s', '/q']);
+const RESERVED_PATHNAMES_VALUES = Object.values(RESERVED_PATHNAMES);
 
-type ResolvedSearchEngine = {
-	homepage: string;
-	beforeTerms: string;
-	afterTerms: string;
-	prefix: string;
-};
+const SEARCH_ENGINE_KEY_REGEX = new RegExp(`^${SEARCH_ENGINE_KEY_PATTERN}$`);
 
-function resolveHttpUrl(value: string, label: string): string {
-	const resolved = /^[a-z][a-z\d+.-]*:/i.test(value) ? value : `https://${value}`;
-	let url: URL;
+function resolveUrl(value: string): string {
+	const resolved = value.includes('://') ? value : `https://${value}`;
 
-	try {
-		url = new URL(resolved);
-	} catch {
-		throw new Error(`${label} is not a valid URL: ${value}`);
+	if (!URL.canParse(resolved)) {
+		throw new Error(`${value} is not a valid URL`);
 	}
 
-	if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-		throw new Error(`${label} must use HTTP or HTTPS: ${value}`);
+	if (!['https:', 'http:'].includes(new URL(resolved).protocol)) {
+		throw new Error(`URL must use HTTP or HTTPS: ${value}`);
 	}
 
 	return resolved;
 }
 
-function compileMappings(): Record<string, string> {
-	const entries: Array<[string, string]> = [];
-	const pathnames = new Map<string, string>();
+function compileMappings() {
+	const urls: MappingURLs = [];
+	const mappings = new Map<keyof Mappings, Mappings[string]>();
 
 	for (const [href, aliases] of Object.entries(MAPPING_CONFIG)) {
 		if (aliases.length === 0) {
-			throw new Error(`Mapping destination must have at least one alias: ${href}`);
+			throw new Error(`Aliases cannot be empty: ${href}`);
 		}
 
-		const destination = resolveHttpUrl(href, 'Mapping destination');
+		const url = resolveUrl(href);
+		urls.push(url);
 
 		for (const alias of aliases) {
-			const pathname = `/${encodeURIComponent(alias.toLowerCase())}`;
-
-			if (RESERVED_PATHNAMES.has(pathname)) {
-				throw new Error(`Mapping alias collides with reserved route: ${pathname}`);
+			if (alias !== encodeURIComponent(alias)) {
+				throw new Error(`Alias must be URL safe: ${alias}`);
 			}
 
-			const existing = pathnames.get(pathname);
+			const pathname = `/${alias}`;
 
-			if (existing) {
-				throw new Error(`Duplicate mapping alias: ${pathname} maps to both ${existing} and ${destination}.`);
+			if (RESERVED_PATHNAMES_VALUES.includes(pathname)) {
+				throw new Error(`${pathname} is reserved.`);
 			}
 
-			pathnames.set(pathname, destination);
-			entries.push([pathname, destination]);
+			if (mappings.has(pathname)) {
+				throw new Error(`Duplicate mapping alias: ${pathname} maps to both ${urls[mappings.get(pathname)!]} and ${url}.`);
+			}
+
+			mappings.set(pathname, urls.length - 1);
 		}
 	}
 
-	return Object.fromEntries(entries);
+	return { urls, mappings: Object.fromEntries(mappings) };
 }
 
-function resolveDirectSearch(engine: Extract<SearchEngine, { url: string }>, key: string): { homepage: string; search: string } {
-	const matches = engine.search.split(SEARCH_TERMS_PLACEHOLDER).length - 1;
-
-	if (matches !== 1) {
-		throw new Error(`Search engine ${key} must contain exactly one ${SEARCH_TERMS_PLACEHOLDER} placeholder.`);
-	}
-
-	const homepage = resolveHttpUrl(engine.url, `Search engine ${key} homepage`);
-	const search = resolveHttpUrl(`${engine.url}${engine.search}`, `Search engine ${key} search URL`);
-
-	return { homepage, search };
+function isSite(engine: RawSearchEngine): engine is { site: string } {
+	return Object.hasOwn(engine, 'site');
 }
 
-function compileSearchEngines(): { default: string; engines: Record<string, ResolvedSearchEngine> } {
-	const { default: defaultKey, engines } = SEARCH_CONFIG;
-	const defaultEngine = engines[defaultKey];
-
-	if ('site' in defaultEngine) {
-		throw new Error(`Default search engine must define a direct search URL: ${defaultKey}`);
+function compileSearchEngines() {
+	if (isSite(SEARCH_ENGINES[SEARCH_ENGINE_DEFAULT])) {
+		throw new Error(`Default search engine cannot be a 'site' search: ${SEARCH_ENGINE_DEFAULT}`);
 	}
 
-	const defaultSearch = resolveDirectSearch(defaultEngine, defaultKey).search;
-	const entries: Array<[string, ResolvedSearchEngine]> = [];
+	const engines = new Map<string, SearchEngine>();
 
-	for (const [key, engine] of Object.entries(engines)) {
-		if (key === '' || key !== key.toLowerCase()) {
-			throw new Error(`Search engine key must be non-empty and lowercase: ${key}`);
+	for (const [key, value] of Object.entries(SEARCH_ENGINES)) {
+		if (!SEARCH_ENGINE_KEY_REGEX.test(key)) {
+			throw new Error(`Search engine key must match ${SEARCH_ENGINE_KEY_REGEX}: ${key}`);
 		}
 
-		let homepage: string;
-		let search: string;
-		let prefix: string;
+		let engine: SearchEngine;
 
-		if ('site' in engine) {
-			homepage = resolveHttpUrl(engine.site, `Site search engine ${key} homepage`);
-			search = defaultSearch;
-			prefix = `site:${engine.site} `;
+		if (isSite(value)) {
+			engine = [resolveUrl(value.site)];
 		} else {
-			({ homepage, search } = resolveDirectSearch(engine, key));
-			prefix = '';
+			if (!value.search.includes(SEARCH_TERMS_PLACEHOLDER)) {
+				throw new Error(`Search does not contain terms placeholder (${SEARCH_TERMS_PLACEHOLDER}).`);
+			}
+
+			const split = value.search.split(SEARCH_TERMS_PLACEHOLDER);
+			engine = [resolveUrl(value.url), split.at(0) ?? '', split.at(-1) ?? ''];
 		}
 
-		const termsIndex = search.indexOf(SEARCH_TERMS_PLACEHOLDER);
-
-		entries.push([
-			key,
-			{
-				homepage,
-				beforeTerms: search.slice(0, termsIndex),
-				afterTerms: search.slice(termsIndex + SEARCH_TERMS_PLACEHOLDER.length),
-				prefix,
-			},
-		]);
+		engines.set(key, engine);
 	}
 
-	return {
-		default: defaultKey,
-		engines: Object.fromEntries(entries),
-	};
+	return Object.fromEntries(engines);
 }
 
-await mkdir(GENERATED_DIRECTORY, { recursive: true });
-await Promise.all([
-	writeFile(new URL('mappings.json', GENERATED_DIRECTORY), `${JSON.stringify(compileMappings(), null, '\t')}\n`),
-	writeFile(new URL('search.json', GENERATED_DIRECTORY), `${JSON.stringify(compileSearchEngines(), null, '\t')}\n`),
-]);
+const compiledMappings = compileMappings();
+const compiledSearchEngines = compileSearchEngines();
+
+const content = `
+	import type { MappingURLs, Mappings, SearchEngines, ActualSearchEngine } from './types.ts';
+
+	export const URLS: MappingURLs = ${JSON.stringify(compiledMappings.urls)};
+	export const MAPPINGS: Mappings = ${JSON.stringify(compiledMappings.mappings)};
+
+ 	export const SEARCH_ENGINES: SearchEngines = ${JSON.stringify(compiledSearchEngines)};
+ 	export const SEARCH_ENGINE_DEFAULT: ActualSearchEngine = ${JSON.stringify(compiledSearchEngines[SEARCH_ENGINE_DEFAULT])};
+`;
+
+await writeFile(join(import.meta.dirname, '../src/generated.ts'), content);
